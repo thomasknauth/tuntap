@@ -47,7 +47,7 @@ static int setup_tap(void) {
        create a new intrface. For now, use a Makefile target
        (currently `run`) to create the tap interface outside of this
        executable. */
-    strcpy(devname, "mytundev0");
+    strcpy(devname, "mytap0");
 
     int fd = tun_alloc(devname);
 
