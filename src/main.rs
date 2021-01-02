@@ -34,7 +34,7 @@ fn main() {
     };
 
     unsafe {
-        req.ifr_ifru.ifr_flags = nix::net::if_::InterfaceFlags::IFF_TAP.bits().try_into().unwrap();
+        req.ifr_ifru.ifr_flags = libc::IFF_TAP.try_into().unwrap();
 
         ioctl::tun_set_interface(f.as_raw_fd(), &mut req as *mut ifreq as u64).unwrap();
     };
