@@ -34,7 +34,13 @@ fn main() {
     };
 
     unsafe {
-        req.ifr_ifru.ifr_flags = libc::IFF_TAP.try_into().unwrap();
+        // IFF_NO_PI is essential here. Ignoring the additional four
+        // bytes prepended to each incoming packet is easy. Outgoing
+        // packets are also prepended with an additional four
+        // bytes. This will most likely confuse the receiver. In the
+        // case of ARP replies, the kernel will not understand and
+        // ignore them if the additional data is present!
+        req.ifr_ifru.ifr_flags = (libc::IFF_TAP | libc::IFF_NO_PI).try_into().unwrap();
 
         ioctl::tun_set_interface(f.as_raw_fd(), &mut req as *mut ifreq as u64).unwrap();
     };
