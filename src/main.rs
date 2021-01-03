@@ -18,6 +18,128 @@ mod ioctl {
     ioctl_write_int!(tun_set_interface, TUNTAP_MAGIC, TUNSETIFF);
 }
 
+#[derive(Debug,Copy,Clone,Default)]
+#[repr(C, packed)]
+struct eth_hdr {
+    dmac: [u8; 6],
+    smac: [u8; 6],
+    eth_type: u16,
+}
+
+impl eth_hdr {
+
+    fn from_bytes(raw: &[u8]) -> eth_hdr {
+        let mut v = eth_hdr::default();
+
+        let r = raw.split_at(6);
+        v.dmac.copy_from_slice(r.0);
+
+        let r = r.1.split_at(6);
+        v.smac.copy_from_slice(r.0);
+
+        let r = r.1.split_at(2);
+        // Note: The code calls u16::from_*big_endian*_bytes() here,
+        // since Ethernet uses "network byte order" to encode
+        // multi-byte values.
+        v.eth_type = u16::from_be_bytes(r.0.try_into().unwrap());
+
+        v
+    }
+
+    fn into_bytes(&self) -> Vec<u8> {
+        // Must use #[repr(C, packed)] when declaring the struct for
+        // core::mem::size_of to return the correct size here.
+        let mut v = Vec::with_capacity(core::mem::size_of::<Self>());
+        v.extend(&self.dmac);
+        v.extend(&self.smac);
+        v.extend(&self.eth_type.to_be_bytes());
+        v
+    }
+}
+
+#[derive(Debug,Copy,Clone,Default)]
+#[repr(C, packed)]
+struct arp_hdr {
+    hwtype: u16,
+    protype: u16,
+    hwsize: u8,
+    prosize: u8,
+    opcode: u16
+}
+
+impl arp_hdr {
+
+    fn from_bytes(raw: &[u8]) -> arp_hdr {
+        let mut v = arp_hdr::default();
+
+        let r = raw.split_at(2);
+        v.hwtype = u16::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(2);
+        v.protype = u16::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(1);
+        v.hwsize = u8::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(1);
+        v.prosize = u8::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(2);
+        v.opcode = u16::from_be_bytes(r.0.try_into().unwrap());
+
+        v
+    }
+
+    fn into_bytes(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(core::mem::size_of::<Self>());
+        v.extend(&self.hwtype.to_be_bytes());
+        v.extend(&self.protype.to_be_bytes());
+        v.extend(&self.hwsize.to_be_bytes());
+        v.extend(&self.prosize.to_be_bytes());
+        v.extend(&self.opcode.to_be_bytes());
+        v
+    }
+}
+
+#[derive(Debug,Copy,Clone,Default)]
+#[repr(C, packed)]
+struct arp_ipv4 {
+    smac: [u8; 6],
+    sip: u32,
+    dmac: [u8; 6],
+    dip: u32
+}
+
+impl arp_ipv4 {
+
+    fn from_bytes(raw: &[u8]) -> arp_ipv4 {
+        let mut v = arp_ipv4::default();
+
+        let r = raw.split_at(6);
+        v.smac.copy_from_slice(r.0);
+
+        let r = r.1.split_at(4);
+        v.sip = u32::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(6);
+        v.dmac.copy_from_slice(r.0);
+
+        let r = r.1.split_at(4);
+        v.dip = u32::from_be_bytes(r.0.try_into().unwrap());
+
+        v
+    }
+
+    fn into_bytes(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(core::mem::size_of::<Self>());
+        v.extend(&self.smac);
+        v.extend(&self.sip.to_be_bytes());
+        v.extend(&self.dmac);
+        v.extend(&self.dip.to_be_bytes());
+        v
+    }
+}
+
 use std::io::Read;
 use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
