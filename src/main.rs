@@ -140,7 +140,19 @@ impl arp_ipv4 {
     }
 }
 
-use std::io::Read;
+const MY_ETH_MAC: [u8; 6] = [0x62, 0x00, 0x40, 0xd2, 0xd2, 0xff];
+const MY_IP: u32 = 0x0a000002; // 10.0.0.2
+
+const ETHTYPE_IPV4: u16 = 0x0800;
+const ETHTYPE_ARP : u16 = 0x0806;
+const ETHTYPE_IPV6: u16 = 0x86DD;
+
+const ARP_REQUEST    : u16 = 0x0001;
+const ARP_REPLY      : u16 = 0x0002;
+const ARP_REV_REQUEST: u16 = 0x0003;
+const ARP_REV_REPLY  : u16 = 0x0004;
+
+use std::io::{Read, Write};
 use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 use std::convert::TryInto;
@@ -172,6 +184,67 @@ fn main() {
         let mut buffer = [0u8; 2048];
 
         let n = f.read(&mut buffer).unwrap();
-        println!("{:x?}", &buffer[0..n]);
+        println!("Read {:?} bytes.", n);
+
+        let my_eth_hdr = eth_hdr::from_bytes(&buffer);
+
+        println!("{:x?}", my_eth_hdr);
+
+        if my_eth_hdr.eth_type == ETHTYPE_ARP {
+            let eth_hdr_size = core::mem::size_of::<eth_hdr>();
+            let offset = eth_hdr_size;
+            let my_arp_hdr = arp_hdr::from_bytes(&buffer[offset..]);
+
+            println!("{:x?}", my_arp_hdr);
+
+            if my_arp_hdr.hwtype != 0x0001 {
+                continue;
+            }
+
+            if my_arp_hdr.protype != 0x0800 {
+                continue;
+            }
+
+            assert!(my_arp_hdr.hwsize == 6);
+            assert!(my_arp_hdr.prosize == 4);
+
+            let offset = offset + core::mem::size_of::<arp_hdr>();
+            let my_arp_ipv4 = arp_ipv4::from_bytes(&buffer[offset..]);
+
+            println!("{:x?}", my_arp_ipv4);
+
+            if my_arp_hdr.opcode == ARP_REQUEST {
+                let reply_eth_hdr = eth_hdr { dmac: my_eth_hdr.smac.clone(),
+                                              smac: MY_ETH_MAC.clone(),
+                                              eth_type: ETHTYPE_ARP };
+
+                let mut reply_arp_hdr = my_arp_hdr.clone();
+                reply_arp_hdr.opcode = ARP_REPLY;
+
+                if my_arp_ipv4.dip != MY_IP {
+                    continue;
+                }
+
+                let reply_arp_ipv4 = arp_ipv4 {
+                    smac: MY_ETH_MAC.clone(),
+                    sip: MY_IP,
+                    dmac: my_arp_ipv4.smac.clone(),
+                    dip: my_arp_ipv4.sip };
+
+                let mut reply = Vec::new();
+                reply.append(&mut reply_eth_hdr.into_bytes());
+                reply.append(&mut reply_arp_hdr.into_bytes());
+                reply.append(&mut reply_arp_ipv4.into_bytes());
+                // Should the ARP reply be padded to the minimum
+                // Ethernet frame size? It seems to work OK without
+                // the paddding.
+                // reply.append(&mut vec![0; 18]);
+
+                let n = f.write(reply.as_slice()).unwrap();
+                println!("Wrote {:?} bytes.", n);
+                println!("{:x?}", reply_eth_hdr);
+                println!("{:x?}", reply);
+            }
+        }
     }
 }
