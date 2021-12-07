@@ -26,6 +26,9 @@ struct eth_hdr {
     eth_type: u16,
 }
 
+// Check structure size at compile time.
+const _: [u8; 14] = [0; std::mem::size_of::<eth_hdr>()];
+
 impl eth_hdr {
 
     fn from_bytes(raw: &[u8]) -> eth_hdr {
@@ -157,6 +160,64 @@ use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 use std::convert::TryInto;
 
+fn handle_arp(my_eth_hdr: &eth_hdr, buffer: &[u8], f: &mut impl Write) {
+
+    let eth_hdr_size = core::mem::size_of::<eth_hdr>();
+    let offset = eth_hdr_size;
+    let my_arp_hdr = arp_hdr::from_bytes(&buffer[offset..]);
+
+    println!("{:x?}", my_arp_hdr);
+
+    if my_arp_hdr.hwtype != 0x0001 {
+        return;
+    }
+
+    if my_arp_hdr.protype != 0x0800 {
+        return;
+    }
+
+    assert!(my_arp_hdr.hwsize == 6);
+    assert!(my_arp_hdr.prosize == 4);
+
+    let offset = offset + core::mem::size_of::<arp_hdr>();
+    let my_arp_ipv4 = arp_ipv4::from_bytes(&buffer[offset..]);
+
+    println!("{:x?}", my_arp_ipv4);
+
+    if my_arp_hdr.opcode == ARP_REQUEST {
+        let reply_eth_hdr = eth_hdr { dmac: my_eth_hdr.smac.clone(),
+                                      smac: MY_ETH_MAC.clone(),
+                                      eth_type: ETHTYPE_ARP };
+
+        let mut reply_arp_hdr = my_arp_hdr.clone();
+        reply_arp_hdr.opcode = ARP_REPLY;
+
+        if my_arp_ipv4.dip != MY_IP {
+            return;
+        }
+
+        let reply_arp_ipv4 = arp_ipv4 {
+            smac: MY_ETH_MAC.clone(),
+            sip: MY_IP,
+            dmac: my_arp_ipv4.smac.clone(),
+            dip: my_arp_ipv4.sip };
+
+        let mut reply = Vec::new();
+        reply.append(&mut reply_eth_hdr.into_bytes());
+        reply.append(&mut reply_arp_hdr.into_bytes());
+        reply.append(&mut reply_arp_ipv4.into_bytes());
+        // Should the ARP reply be padded to the minimum
+        // Ethernet frame size? It seems to work OK without
+        // the paddding.
+        // reply.append(&mut vec![0; 18]);
+
+        let n = f.write(reply.as_slice()).unwrap();
+        println!("Wrote {:?} bytes.", n);
+        println!("{:x?}", reply_eth_hdr);
+        println!("{:x?}", reply);
+    }
+}
+
 fn main() {
 
     let mut f = OpenOptions::new().read(true).write(true).open("/dev/net/tun").unwrap();
@@ -190,61 +251,9 @@ fn main() {
 
         println!("{:x?}", my_eth_hdr);
 
-        if my_eth_hdr.eth_type == ETHTYPE_ARP {
-            let eth_hdr_size = core::mem::size_of::<eth_hdr>();
-            let offset = eth_hdr_size;
-            let my_arp_hdr = arp_hdr::from_bytes(&buffer[offset..]);
-
-            println!("{:x?}", my_arp_hdr);
-
-            if my_arp_hdr.hwtype != 0x0001 {
-                continue;
-            }
-
-            if my_arp_hdr.protype != 0x0800 {
-                continue;
-            }
-
-            assert!(my_arp_hdr.hwsize == 6);
-            assert!(my_arp_hdr.prosize == 4);
-
-            let offset = offset + core::mem::size_of::<arp_hdr>();
-            let my_arp_ipv4 = arp_ipv4::from_bytes(&buffer[offset..]);
-
-            println!("{:x?}", my_arp_ipv4);
-
-            if my_arp_hdr.opcode == ARP_REQUEST {
-                let reply_eth_hdr = eth_hdr { dmac: my_eth_hdr.smac.clone(),
-                                              smac: MY_ETH_MAC.clone(),
-                                              eth_type: ETHTYPE_ARP };
-
-                let mut reply_arp_hdr = my_arp_hdr.clone();
-                reply_arp_hdr.opcode = ARP_REPLY;
-
-                if my_arp_ipv4.dip != MY_IP {
-                    continue;
-                }
-
-                let reply_arp_ipv4 = arp_ipv4 {
-                    smac: MY_ETH_MAC.clone(),
-                    sip: MY_IP,
-                    dmac: my_arp_ipv4.smac.clone(),
-                    dip: my_arp_ipv4.sip };
-
-                let mut reply = Vec::new();
-                reply.append(&mut reply_eth_hdr.into_bytes());
-                reply.append(&mut reply_arp_hdr.into_bytes());
-                reply.append(&mut reply_arp_ipv4.into_bytes());
-                // Should the ARP reply be padded to the minimum
-                // Ethernet frame size? It seems to work OK without
-                // the paddding.
-                // reply.append(&mut vec![0; 18]);
-
-                let n = f.write(reply.as_slice()).unwrap();
-                println!("Wrote {:?} bytes.", n);
-                println!("{:x?}", reply_eth_hdr);
-                println!("{:x?}", reply);
-            }
+        match my_eth_hdr.eth_type {
+            ETHTYPE_ARP => handle_arp(&my_eth_hdr, &buffer, &mut f),
+            _ => println!("Ignoring unknown Ethernet packet.")
         }
     }
 }
