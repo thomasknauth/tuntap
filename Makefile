@@ -22,3 +22,5 @@ down:
 .PHONY: check
 check:
 	pytest-3
+	cargo test
+

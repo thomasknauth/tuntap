@@ -1,6 +1,7 @@
 extern crate libc;
 
 use ifstructs::ifreq;
+use std::convert::TryFrom;
 
 // Why on earth is this a top-level macro when the documentation is
 // under nix::sys::ioctl?!? Took me several hours to figure why
@@ -218,6 +219,152 @@ fn handle_arp(my_eth_hdr: &eth_hdr, buffer: &[u8], f: &mut impl Write) {
     }
 }
 
+#[derive(Debug,Copy,Clone,Default)]
+#[repr(C, packed)]
+struct ipv4_hdr {
+    version_ihl: u8,
+    tos: u8,
+    len: u16,
+    id: u16,
+    flags_frag_offset: u16,
+    ttl: u8,
+    proto: u8,
+    csum: u16,
+    saddr: u32,
+    daddr: u32
+}
+
+// Compile-time check for size of structure.
+const _: [u8; 20] = [0; std::mem::size_of::<ipv4_hdr>()];
+
+impl ipv4_hdr {
+
+    fn from_bytes(raw: &[u8]) -> ipv4_hdr {
+        let mut v = ipv4_hdr::default();
+
+        let r = raw.split_at(1);
+        v.version_ihl = u8::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(1);
+        v.tos = u8::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(2);
+        v.len = u16::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(2);
+        v.id = u16::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(2);
+        v.flags_frag_offset = u16::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(1);
+        v.ttl = u8::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(1);
+        v.proto = u8::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(2);
+        v.csum = u16::from_be_bytes(r.0.try_into().unwrap());
+        assert_eq!(ipv4_checksum(raw, std::mem::size_of::<ipv4_hdr>().try_into().unwrap()), v.csum);
+
+        let r = r.1.split_at(4);
+        v.saddr = u32::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(4);
+        v.daddr = u32::from_be_bytes(r.0.try_into().unwrap());
+
+        v
+    }
+}
+
+#[derive(Debug,Copy,Clone,Default)]
+#[repr(C, packed)]
+struct ipv6_hdr {
+    version: u32,
+    payload_len: u16,
+    next_hdr: u8,
+    hop_limit: u8,
+    src_addr: [u8; 4*4],
+    dst_addr: [u8; 4*4]
+}
+
+// Compile-time check for size of structure.
+const _: [u8; 40] = [0; std::mem::size_of::<ipv6_hdr>()];
+
+impl ipv6_hdr {
+
+    fn from_bytes(raw: &[u8]) -> ipv6_hdr {
+        let mut v = ipv6_hdr::default();
+
+        let r = raw.split_at(4);
+        v.version = u32::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(2);
+        v.payload_len = u16::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(1);
+        v.next_hdr = u8::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(1);
+        v.hop_limit = u8::from_be_bytes(r.0.try_into().unwrap());
+
+        let r = r.1.split_at(16);
+        v.src_addr.copy_from_slice(r.0);
+
+        let r = r.1.split_at(16);
+        v.dst_addr.copy_from_slice(r.0);
+
+        v
+    }
+}
+
+fn ipv4_checksum(a: &[u8], mut len: u16) -> u16 {
+
+    assert_eq!(len, std::mem::size_of::<ipv4_hdr>().try_into().unwrap());
+
+    let mut csum: u32 = 0;
+
+    let mut r = (a, a);
+
+    while len > 1 {
+
+        r = r.1.split_at(2);
+
+        // Skip checksum bytes (10 and 9 from end of packet).
+        if (len != 10) {
+            csum += u32::from(u16::from_be_bytes(r.0.try_into().unwrap()));
+        }
+
+        len -= 2;
+    }
+
+    if len > 0 {
+        csum += u32::from(u8::from_be_bytes(r.1.try_into().unwrap()));
+    }
+
+    csum = (csum & 0xFFFF) + (csum >> 16);
+
+    !u16::try_from(csum).ok().unwrap()
+}
+
+fn handle_ipv6(my_eth_hdr: &eth_hdr, buffer: &[u8], f: &mut impl Write) {
+
+    let eth_hdr_size = core::mem::size_of::<eth_hdr>();
+    let offset = eth_hdr_size;
+    let an_ipv6_hdr = ipv6_hdr::from_bytes(&buffer[offset..]);
+
+    println!("{:x?}", an_ipv6_hdr);
+}
+
+fn handle_ipv4(my_eth_hdr: &eth_hdr, buffer: &[u8], f: &mut impl Write) {
+
+    let eth_hdr_size = core::mem::size_of::<eth_hdr>();
+    let offset = eth_hdr_size;
+    let an_ipv4_hdr = ipv4_hdr::from_bytes(&buffer[offset..]);
+
+    println!("{:x?}", an_ipv4_hdr);
+}
+
 fn main() {
 
     let mut f = OpenOptions::new().read(true).write(true).open("/dev/net/tun").unwrap();
@@ -253,7 +400,22 @@ fn main() {
 
         match my_eth_hdr.eth_type {
             ETHTYPE_ARP => handle_arp(&my_eth_hdr, &buffer, &mut f),
+            ETHTYPE_IPV6 => handle_ipv6(&my_eth_hdr, &buffer, &mut f),
+            ETHTYPE_IPV4 => handle_ipv4(&my_eth_hdr, &buffer, &mut f),
             _ => println!("Ignoring unknown Ethernet packet.")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ipv4_checksum() {
+        const v: [u8; 20] = [0x45, 0x00, 0x00, 0x54, 0x41, 0xe0, 0x40, 0x00, 0x40, 0x01, 0xe4, 0xc0,
+                             0x0a, 0x00, 0x00, 0x04, 0x0a, 0x00, 0x00, 0x05];
+
+        assert_eq!(ipv4_checksum(&v, 20), 0xe4c0);
     }
 }
