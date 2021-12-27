@@ -265,7 +265,10 @@ impl ipv4_hdr {
 
         let r = r.1.split_at(2);
         v.csum = u16::from_be_bytes(r.0.try_into().unwrap());
-        assert_eq!(ipv4_checksum(raw, std::mem::size_of::<ipv4_hdr>().try_into().unwrap()), v.csum);
+
+        if ipv4_checksum(&raw) != 0 {
+            panic!("Incorrect IPv4 checksum.");
+        }
 
         let r = r.1.split_at(4);
         v.saddr = u32::from_be_bytes(r.0.try_into().unwrap());
@@ -316,13 +319,20 @@ impl ipv6_hdr {
 
         v
     }
-}
+     }
 
-fn ipv4_checksum(a: &[u8], mut len: u16) -> u16 {
-
-    assert_eq!(len, std::mem::size_of::<ipv4_hdr>().try_into().unwrap());
+/**
+ * Compute IPv4 checksum over input array `a`.
+ *
+ * Nice property about the checksum is that if the input data already
+ * contains the checksum, e.g., a received datagram, the function
+ * should just return zero to indicate a correct checksum over the
+ * data.
+ */
+fn ipv4_checksum(a: &[u8]) -> u16 {
 
     let mut csum: u32 = 0;
+    let mut len = a.len();
 
     let mut r = (a, a);
 
@@ -330,10 +340,7 @@ fn ipv4_checksum(a: &[u8], mut len: u16) -> u16 {
 
         r = r.1.split_at(2);
 
-        // Skip checksum bytes (10 and 9 from end of packet).
-        if (len != 10) {
-            csum += u32::from(u16::from_be_bytes(r.0.try_into().unwrap()));
-        }
+        csum += u32::from(u16::from_be_bytes(r.0.try_into().unwrap()));
 
         len -= 2;
     }
@@ -413,9 +420,9 @@ mod tests {
 
     #[test]
     fn test_ipv4_checksum() {
-        const v: [u8; 20] = [0x45, 0x00, 0x00, 0x54, 0x41, 0xe0, 0x40, 0x00, 0x40, 0x01, 0xe4, 0xc0,
+        const v: [u8; 20] = [0x45, 0x00, 0x00, 0x54, 0x41, 0xe0, 0x40, 0x00, 0x40, 0x01, 0x0, 0x0,
                              0x0a, 0x00, 0x00, 0x04, 0x0a, 0x00, 0x00, 0x05];
 
-        assert_eq!(ipv4_checksum(&v, 20), 0xe4c0);
+        assert_eq!(ipv4_checksum(&v), 0xe4c0);
     }
 }
