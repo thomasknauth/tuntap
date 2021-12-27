@@ -278,6 +278,21 @@ impl ipv4_hdr {
 
         v
     }
+
+    fn into_bytes(&self) -> Vec<u8> {
+        let mut b = Vec::<u8>::with_capacity(core::mem::size_of::<&Self>());
+        b.extend(&self.version_ihl.to_be_bytes());
+        b.extend(&self.tos.to_be_bytes());
+        b.extend(&self.len.to_be_bytes());
+        b.extend(&self.id.to_be_bytes());
+        b.extend(&self.flags_frag_offset.to_be_bytes());
+        b.extend(&self.ttl.to_be_bytes());
+        b.extend(&self.proto.to_be_bytes());
+        b.extend(&self.csum.to_be_bytes());
+        b.extend(&self.saddr.to_be_bytes());
+        b.extend(&self.daddr.to_be_bytes());
+        b
+    }
 }
 
 #[derive(Debug,Copy,Clone,Default)]
@@ -372,6 +387,77 @@ fn handle_ipv4(my_eth_hdr: &eth_hdr, buffer: &[u8], f: &mut impl Write) {
     println!("{:x?}", an_ipv4_hdr);
 }
 
+const ICMP_TYPE_ECHO_REPLY      : u8 = 0x0;
+const ICMP_TYPE_DST_UNREACHABLE : u8 = 0x3;
+const ICMP_TYPE_ECHO_REQUEST    : u8 = 0x8;
+
+#[derive(Debug,Copy,Clone,Default)]
+#[repr(C, packed)]
+struct icmp_v4_hdr {
+    msg_type: u8,
+    code: u8,
+    csum: u16
+}
+
+impl icmp_v4_hdr {
+
+    fn from_bytes(b: &[u8]) -> icmp_v4_hdr {
+        let mut p = icmp_v4_hdr::default();
+
+        let t = b.split_at(1);
+        p.msg_type = u8::from_be_bytes(t.0.try_into().unwrap());
+
+        let t = t.1.split_at(1);
+        p.code = u8::from_be_bytes(t.0.try_into().unwrap());
+
+        let t = t.1.split_at(2);
+        p.csum = u16::from_be_bytes(t.0.try_into().unwrap());
+
+        p
+    }
+
+    fn into_bytes(&self) -> Vec<u8> {
+        let mut v = Vec::<u8>::with_capacity(core::mem::size_of::<Self>());
+        v.extend(&self.msg_type.to_be_bytes());
+        v.extend(&self.code.to_be_bytes());
+        v.extend(&self.csum.to_be_bytes());
+        v
+    }
+}
+
+#[derive(Debug,Clone,Default)]
+#[repr(C, packed)]
+struct icmp_v4_echo {
+    id: u16,
+    seq: u16,
+    data: Vec<u8>
+}
+
+impl icmp_v4_echo {
+    fn from_bytes(s: &[u8]) -> icmp_v4_echo {
+        let mut p = icmp_v4_echo::default();
+
+        let t = s.split_at(2);
+        p.id = u16::from_be_bytes(t.0.try_into().unwrap());
+
+        let t = t.1.split_at(2);
+        p.seq = u16::from_be_bytes(t.0.try_into().unwrap());
+
+        // Remaining bytes go into data
+        p.data.extend_from_slice(&t.1[0..]);
+
+        p
+    }
+
+    fn into_bytes(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + self.data.len());
+        v.extend(&self.id.to_be_bytes());
+        v.extend(&self.seq.to_be_bytes());
+        v.extend(&self.data);
+        v
+    }
+}
+
 fn main() {
 
     let mut f = OpenOptions::new().read(true).write(true).open("/dev/net/tun").unwrap();
@@ -424,5 +510,41 @@ mod tests {
                              0x0a, 0x00, 0x00, 0x04, 0x0a, 0x00, 0x00, 0x05];
 
         assert_eq!(ipv4_checksum(&v), 0xe4c0);
+    }
+
+    #[test]
+    fn test_ipv4_hdr() {
+        // Capturing byte sequences to test (de)serialization code is
+        // easy with `tcpdump -xx` - the `-xx` makes tcpdump also
+        // output link-level (Ethernet) headers. The following is an
+        // IPv4 header (20 bytes).
+        let bytes: [u8; 20] =
+            [	0x45, 0x00, 0x00, 0x54, 0x5d, 0xb8, 0x40, 0x00,
+              0x40, 0x01, 0xc6, 0xe0, 0x0a, 0x00, 0x02, 0x0f,
+              0x0a, 0x00, 0x00, 0x02
+            ];
+
+        assert_eq!(&bytes, ipv4_hdr::from_bytes(&bytes).into_bytes().as_slice());
+        assert_eq!(ipv4_checksum(&bytes), 0);
+    }
+
+    #[test]
+    fn test_icmp_v4_echo() {
+        let bytes: [u8; 64] =
+            [0x08, 0x00, 0x44, 0x16, 0x00, 0x1b, 0x00, 0x01,
+             0x3a, 0xab, 0xb7, 0x61, 0x00, 0x00, 0x00, 0x00,
+             0xf5, 0xed, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00,
+             0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+             0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+             0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+             0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
+             0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37];
+
+        assert_eq!(&bytes[0..4], icmp_v4_hdr::from_bytes(&bytes[0..4]).into_bytes().as_slice());
+        assert_eq!(&bytes[4..], icmp_v4_echo::from_bytes(&bytes[4..]).into_bytes().as_slice());
+
+        // Checksum is zero, since bytes[2..3] already contain the
+        // checksum. If bytes[2..3] = 0x0, checksum will be 0x4416;
+        assert_eq!(ipv4_checksum(&bytes), 0x0);
     }
 }
