@@ -153,70 +153,61 @@ const ETHTYPE_IPV6: u16 = 0x86DD;
 
 const ARP_REQUEST    : u16 = 0x0001;
 const ARP_REPLY      : u16 = 0x0002;
-const ARP_REV_REQUEST: u16 = 0x0003;
-const ARP_REV_REPLY  : u16 = 0x0004;
+
+const ARP_HW_TYPE_ETHERNET: u16 = 0x0001;
 
 use std::io::{Read, Write};
 use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 use std::convert::TryInto;
 
-fn handle_arp(my_eth_hdr: &eth_hdr, buffer: &[u8], f: &mut impl Write) {
+fn handle_arp(buffer: &[u8]) -> Option<Vec<u8>> {
 
     let eth_hdr_size = core::mem::size_of::<eth_hdr>();
     let offset = eth_hdr_size;
-    let my_arp_hdr = arp_hdr::from_bytes(&buffer[offset..]);
+    let in_arp_hdr = arp_hdr::from_bytes(&buffer[offset..]);
 
-    println!("{:x?}", my_arp_hdr);
+    println!("{:x?}", in_arp_hdr);
 
-    if my_arp_hdr.hwtype != 0x0001 {
-        return;
+    if in_arp_hdr.hwtype != ARP_HW_TYPE_ETHERNET {
+        return None;
     }
 
-    if my_arp_hdr.protype != 0x0800 {
-        return;
+    if in_arp_hdr.protype != ETHTYPE_IPV4 {
+        return None;
     }
 
-    assert!(my_arp_hdr.hwsize == 6);
-    assert!(my_arp_hdr.prosize == 4);
+    assert!(in_arp_hdr.hwsize == 6);
+    assert!(in_arp_hdr.prosize == 4);
 
     let offset = offset + core::mem::size_of::<arp_hdr>();
-    let my_arp_ipv4 = arp_ipv4::from_bytes(&buffer[offset..]);
+    let in_arp_ipv4 = arp_ipv4::from_bytes(&buffer[offset..]);
 
-    println!("{:x?}", my_arp_ipv4);
+    println!("{:x?}", in_arp_ipv4);
 
-    if my_arp_hdr.opcode == ARP_REQUEST {
-        let reply_eth_hdr = eth_hdr { dmac: my_eth_hdr.smac.clone(),
-                                      smac: MY_ETH_MAC.clone(),
-                                      eth_type: ETHTYPE_ARP };
-
-        let mut reply_arp_hdr = my_arp_hdr.clone();
-        reply_arp_hdr.opcode = ARP_REPLY;
-
-        if my_arp_ipv4.dip != MY_IP {
-            return;
-        }
-
-        let reply_arp_ipv4 = arp_ipv4 {
-            smac: MY_ETH_MAC.clone(),
-            sip: MY_IP,
-            dmac: my_arp_ipv4.smac.clone(),
-            dip: my_arp_ipv4.sip };
-
-        let mut reply = Vec::new();
-        reply.append(&mut reply_eth_hdr.into_bytes());
-        reply.append(&mut reply_arp_hdr.into_bytes());
-        reply.append(&mut reply_arp_ipv4.into_bytes());
-        // Should the ARP reply be padded to the minimum
-        // Ethernet frame size? It seems to work OK without
-        // the paddding.
-        // reply.append(&mut vec![0; 18]);
-
-        let n = f.write(reply.as_slice()).unwrap();
-        println!("Wrote {:?} bytes.", n);
-        println!("{:x?}", reply_eth_hdr);
-        println!("{:x?}", reply);
+    if in_arp_hdr.opcode != ARP_REQUEST {
+        println!("Unknown ARP opcode.");
+        return None;
     }
+
+    if in_arp_ipv4.dip != MY_IP {
+        return None;
+    }
+
+    let mut out_arp_hdr = in_arp_hdr.clone();
+    out_arp_hdr.opcode = ARP_REPLY;
+
+    let out_arp_ipv4 = arp_ipv4 {
+        smac: MY_ETH_MAC.clone(),
+        sip: MY_IP,
+        dmac: in_arp_ipv4.smac.clone(),
+        dip: in_arp_ipv4.sip };
+
+    let mut bytes = Vec::new();
+    bytes.extend(&out_arp_hdr.into_bytes());
+    bytes.extend(&out_arp_ipv4.into_bytes());
+
+    return Some(bytes);
 }
 
 #[derive(Debug,Copy,Clone,Default)]
@@ -369,26 +360,101 @@ fn ipv4_checksum(a: &[u8]) -> u16 {
     !u16::try_from(csum).ok().unwrap()
 }
 
-fn handle_ipv6(my_eth_hdr: &eth_hdr, buffer: &[u8], f: &mut impl Write) {
+fn handle_ipv6(buffer: &[u8]) -> Option<Vec<u8>> {
 
     let eth_hdr_size = core::mem::size_of::<eth_hdr>();
     let offset = eth_hdr_size;
     let an_ipv6_hdr = ipv6_hdr::from_bytes(&buffer[offset..]);
 
     println!("{:x?}", an_ipv6_hdr);
+
+    None
 }
 
-fn handle_ipv4(my_eth_hdr: &eth_hdr, buffer: &[u8], f: &mut impl Write) {
+fn handle_icmp_4v(buffer: &[u8]) -> Option<Vec<u8>> {
+
+    let in_hdr = icmp_v4_hdr::from_bytes(buffer);
+    let hdr_len = core::mem::size_of::<icmp_v4_hdr>();
+
+    if in_hdr.msg_type != ICMP_TYPE_ECHO_REQUEST {
+        println!("Unknown ICMP request.");
+        return None;
+    }
+
+    let req = icmp_v4_echo::from_bytes(&buffer[hdr_len..]);
+    println!("icmp hdr {:x?}", in_hdr);
+    println!("icmp req {:x?}", req);
+
+    let reply = icmp_v4_echo {
+        id: req.id,
+        seq: req.seq,
+        data: {req.data}
+    };
+
+    let out_hdr = icmp_v4_hdr {
+        msg_type: ICMP_TYPE_ECHO_REPLY,
+        code: 0,
+        csum: 0
+    };
+
+    let mut bytes = out_hdr.into_bytes();
+    bytes.extend(&reply.into_bytes());
+    let csum = ipv4_checksum(&bytes);
+    bytes[2..4].copy_from_slice(&csum.to_be_bytes());
+
+    return Some(bytes);
+}
+
+// https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml
+const IP_PROTO_ICMP: u8 = 1;
+const IP_PROTO_TCP:  u8 = 6;
+const IP_PROTO_UDP:  u8 = 17;
+
+fn handle_ipv4(buffer: &[u8]) -> Option<Vec<u8>> {
 
     let eth_hdr_size = core::mem::size_of::<eth_hdr>();
     let offset = eth_hdr_size;
-    let an_ipv4_hdr = ipv4_hdr::from_bytes(&buffer[offset..]);
+    let in_ipv4_hdr = ipv4_hdr::from_bytes(&buffer[offset..]);
 
-    println!("{:x?}", an_ipv4_hdr);
+    let data_start = offset + core::mem::size_of::<ipv4_hdr>();
+    let data_end = offset + usize::try_from(in_ipv4_hdr.len).ok().unwrap();
+    let data = &buffer[data_start..data_end];
+
+    println!("{:x?}", in_ipv4_hdr);
+
+    match in_ipv4_hdr.proto {
+        IP_PROTO_ICMP => {
+            let out_data = match handle_icmp_4v(data) {
+                Some(x) => x,
+                None => {
+                    println!("Error handling ICMP packet.");
+                    return None;
+                }
+            };
+
+            let mut out_ip4v_hdr = in_ipv4_hdr.clone();
+            out_ip4v_hdr.saddr = in_ipv4_hdr.daddr;
+            out_ip4v_hdr.daddr = in_ipv4_hdr.saddr;
+            out_ip4v_hdr.ttl = 10;
+            out_ip4v_hdr.csum = 0;
+
+            let mut out_bytes = out_ip4v_hdr.into_bytes();
+
+            let csum = ipv4_checksum(&out_bytes);
+            out_bytes[10..12].copy_from_slice(&csum.to_be_bytes());
+            out_bytes.extend(&out_data);
+
+            return Some(out_bytes);
+        },
+        IP_PROTO_TCP => todo!(),
+        IP_PROTO_UDP => todo!(),
+        _ => println!("Cannot handle IP packet: {:x?}", in_ipv4_hdr)
+    };
+
+    None
 }
 
 const ICMP_TYPE_ECHO_REPLY      : u8 = 0x0;
-const ICMP_TYPE_DST_UNREACHABLE : u8 = 0x3;
 const ICMP_TYPE_ECHO_REQUEST    : u8 = 0x8;
 
 #[derive(Debug,Copy,Clone,Default)]
@@ -426,7 +492,7 @@ impl icmp_v4_hdr {
 }
 
 #[derive(Debug,Clone,Default)]
-#[repr(C, packed)]
+#[repr(C)]
 struct icmp_v4_echo {
     id: u16,
     seq: u16,
@@ -487,16 +553,41 @@ fn main() {
         let n = f.read(&mut buffer).unwrap();
         println!("Read {:?} bytes.", n);
 
-        let my_eth_hdr = eth_hdr::from_bytes(&buffer);
+        let in_eth_hdr = eth_hdr::from_bytes(&buffer);
 
-        println!("{:x?}", my_eth_hdr);
+        println!("{:x?}", in_eth_hdr);
 
-        match my_eth_hdr.eth_type {
-            ETHTYPE_ARP => handle_arp(&my_eth_hdr, &buffer, &mut f),
-            ETHTYPE_IPV6 => handle_ipv6(&my_eth_hdr, &buffer, &mut f),
-            ETHTYPE_IPV4 => handle_ipv4(&my_eth_hdr, &buffer, &mut f),
-            _ => println!("Ignoring unknown Ethernet packet.")
+        let payload =
+            match in_eth_hdr.eth_type {
+                ETHTYPE_ARP => handle_arp(&buffer),
+                ETHTYPE_IPV6 => handle_ipv6(&buffer),
+                ETHTYPE_IPV4 => handle_ipv4(&buffer),
+                _ => {
+                    println!("Ignoring unknown Ethernet packet.");
+                    None
+                }
+            };
+
+        if payload.is_none() {
+            continue;
         }
+
+        let out_eth_hdr = eth_hdr {
+            dmac: in_eth_hdr.smac.clone(),
+            smac: MY_ETH_MAC.clone(),
+            eth_type: in_eth_hdr.eth_type
+        };
+
+        let payload = payload.unwrap();
+
+        let mut eth = Vec::<u8>::with_capacity(core::mem::size_of::<eth_hdr>() + payload.len());
+
+        eth.extend(&out_eth_hdr.into_bytes());
+        eth.extend(&payload);
+
+        let sent_bytes = f.write(eth.as_slice()).unwrap();
+
+        println!("Sent {} bytes as response.", sent_bytes);
     }
 }
 
@@ -506,10 +597,11 @@ mod tests {
 
     #[test]
     fn test_ipv4_checksum() {
-        const v: [u8; 20] = [0x45, 0x00, 0x00, 0x54, 0x41, 0xe0, 0x40, 0x00, 0x40, 0x01, 0x0, 0x0,
-                             0x0a, 0x00, 0x00, 0x04, 0x0a, 0x00, 0x00, 0x05];
+        let bytes: [u8; 20] = [0x45, 0x00, 0x00, 0x54, 0x41, 0xe0, 0x40, 0x00,
+                               0x40, 0x01, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x04,
+                               0x0a, 0x00, 0x00, 0x05];
 
-        assert_eq!(ipv4_checksum(&v), 0xe4c0);
+        assert_eq!(ipv4_checksum(&bytes), 0xe4c0);
     }
 
     #[test]
