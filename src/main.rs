@@ -230,7 +230,7 @@ const _: [u8; 20] = [0; std::mem::size_of::<ipv4_hdr>()];
 
 impl ipv4_hdr {
 
-    fn from_bytes(raw: &[u8]) -> ipv4_hdr {
+    fn from_bytes(raw: &[u8]) -> Option<ipv4_hdr> {
         let mut v = ipv4_hdr::default();
 
         let r = raw.split_at(1);
@@ -257,8 +257,10 @@ impl ipv4_hdr {
         let r = r.1.split_at(2);
         v.csum = u16::from_be_bytes(r.0.try_into().unwrap());
 
-        if ipv4_checksum(&raw) != 0 {
-            panic!("Incorrect IPv4 checksum.");
+        let csum = ipv4_checksum(&raw[0..core::mem::size_of::<ipv4_hdr>()]);
+        if  csum != 0 {
+            println!("Incorrect IPv4 checksum: {:x} vs {:x}", csum, v.csum);
+            return None;
         }
 
         let r = r.1.split_at(4);
@@ -267,7 +269,7 @@ impl ipv4_hdr {
         let r = r.1.split_at(4);
         v.daddr = u32::from_be_bytes(r.0.try_into().unwrap());
 
-        v
+        Some(v)
     }
 
     fn into_bytes(&self) -> Vec<u8> {
@@ -414,7 +416,11 @@ fn handle_ipv4(buffer: &[u8]) -> Option<Vec<u8>> {
 
     let eth_hdr_size = core::mem::size_of::<eth_hdr>();
     let offset = eth_hdr_size;
-    let in_ipv4_hdr = ipv4_hdr::from_bytes(&buffer[offset..]);
+
+    let in_ipv4_hdr = match ipv4_hdr::from_bytes(&buffer[offset..]) {
+        Some(x) => x,
+        None => return None
+    };
 
     let data_start = offset + core::mem::size_of::<ipv4_hdr>();
     let data_end = offset + usize::try_from(in_ipv4_hdr.len).ok().unwrap();
@@ -616,7 +622,7 @@ mod tests {
               0x0a, 0x00, 0x00, 0x02
             ];
 
-        assert_eq!(&bytes, ipv4_hdr::from_bytes(&bytes).into_bytes().as_slice());
+        assert_eq!(&bytes, ipv4_hdr::from_bytes(&bytes).unwrap().into_bytes().as_slice());
         assert_eq!(ipv4_checksum(&bytes), 0);
     }
 
