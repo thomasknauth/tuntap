@@ -428,36 +428,35 @@ fn handle_ipv4(buffer: &[u8]) -> Option<Vec<u8>> {
 
     println!("{:x?}", in_ipv4_hdr);
 
-    match in_ipv4_hdr.proto {
-        IP_PROTO_ICMP => {
-            let out_data = match handle_icmp_4v(data) {
-                Some(x) => x,
-                None => {
-                    println!("Error handling ICMP packet.");
-                    return None;
-                }
-            };
-
-            let mut out_ip4v_hdr = in_ipv4_hdr.clone();
-            out_ip4v_hdr.saddr = in_ipv4_hdr.daddr;
-            out_ip4v_hdr.daddr = in_ipv4_hdr.saddr;
-            out_ip4v_hdr.ttl = 10;
-            out_ip4v_hdr.csum = 0;
-
-            let mut out_bytes = out_ip4v_hdr.into_bytes();
-
-            let csum = ipv4_checksum(&out_bytes);
-            out_bytes[10..12].copy_from_slice(&csum.to_be_bytes());
-            out_bytes.extend(&out_data);
-
-            return Some(out_bytes);
-        },
+    let out_data = match in_ipv4_hdr.proto {
+        IP_PROTO_ICMP => handle_icmp_4v(data),
         IP_PROTO_TCP => todo!(),
         IP_PROTO_UDP => todo!(),
-        _ => println!("Cannot handle IP packet: {:x?}", in_ipv4_hdr)
+        _ => {
+            println!("Cannot handle IP packet: {:x?}", in_ipv4_hdr);
+            None
+        }
     };
 
-    None
+    if out_data.is_none() {
+        return None;
+    }
+
+    let out_data = out_data.unwrap();
+
+    let mut out_ip4v_hdr = in_ipv4_hdr.clone();
+    out_ip4v_hdr.saddr = in_ipv4_hdr.daddr;
+    out_ip4v_hdr.daddr = in_ipv4_hdr.saddr;
+    out_ip4v_hdr.ttl = 10;
+    out_ip4v_hdr.csum = 0;
+
+    let mut out_bytes = out_ip4v_hdr.into_bytes();
+
+    let csum = ipv4_checksum(&out_bytes);
+    out_bytes[10..12].copy_from_slice(&csum.to_be_bytes());
+    out_bytes.extend(&out_data);
+
+    return Some(out_bytes);
 }
 
 const ICMP_TYPE_ECHO_REPLY      : u8 = 0x0;
